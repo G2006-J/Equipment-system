@@ -85,6 +85,7 @@ const getErrorMessage = (error) => {
 function StatusPill({ value }) {
   const labels = {
     available: "Available",
+    out_of_stock: "Out of stock",
     reserved: "Reserved",
     maintenance: "Maintenance",
     retired: "Retired",
@@ -232,12 +233,12 @@ function EmptyState({ title, copy, action, onAction }) {
 }
 
 function EquipmentCard({ item, onBorrow, onReserve }) {
-  const canBorrow = item.status === "available";
+  const canBorrow = item.status === "available" && item.quantity > 0;
   return (
     <article className="equipment-card">
       <div className={`equipment-art art-${(item.category || "general").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
         {item.image_url ? <img src={item.image_url} alt="" /> : <Laptop size={42} strokeWidth={1.2} />}
-        <StatusPill value={item.status} />
+        <StatusPill value={item.quantity === 0 ? "out_of_stock" : item.status} />
       </div>
       <div className="card-body">
         <div className="card-category">{item.category || "General"}</div>
@@ -245,10 +246,11 @@ function EquipmentCard({ item, onBorrow, onReserve }) {
         <div className="item-meta">
           <span>{item.asset_tag}</span><i /><span>{item.location || "Storage not set"}</span>
         </div>
+        <p className="item-quantity">Amount: <strong>{item.quantity}</strong></p>
         {item.description && <p className="item-description">{item.description}</p>}
         <div className="card-actions">
           <button className="button-primary" disabled={!canBorrow} onClick={() => onBorrow(item)}>
-            {canBorrow ? "Request to borrow" : item.status === "maintenance" ? "Under maintenance" : "Unavailable"}
+            {canBorrow ? "Request to borrow" : item.quantity === 0 ? "Out of stock" : item.status === "maintenance" ? "Under maintenance" : "Unavailable"}
           </button>
           {canBorrow && <button className="button-icon" aria-label={`Reserve ${item.name}`} title="Reserve" onClick={() => onReserve(item)}><CalendarDays size={17} /></button>}
         </div>
@@ -331,7 +333,8 @@ export default function Home() {
         category: item.categories?.category_name || "General",
         location: item.storage_location || "",
         status: item.availability_status === "borrowed" ? "checked_out" : item.availability_status,
-        image_url: null,
+        image_url: item.image_url || null,
+        quantity: item.quantity ?? 1,
       })));
     }
     if (categoryResult.error) errors.push(`Equipment categories could not be loaded: ${categoryResult.error.message}`);
@@ -545,14 +548,36 @@ export default function Home() {
     }
   }
 
+  async function uploadEquipmentImage(form) {
+    const file = form.get("image");
+    if (!(file instanceof File) || file.size === 0) return null;
+    const allowedTypes = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+    };
+    const extension = allowedTypes[file.type];
+    if (!extension) throw new Error("Choose a JPEG, PNG, WebP, or GIF image.");
+    if (file.size > 5 * 1024 * 1024) throw new Error("Equipment images must be 5 MB or smaller.");
+
+    const path = `${user.id}/${crypto.randomUUID()}.${extension}`;
+    const { error: uploadError } = await supabase.storage
+      .from("equipment-images")
+      .upload(path, file, { contentType: file.type, cacheControl: "3600" });
+    if (uploadError) throw uploadError;
+    return supabase.storage.from("equipment-images").getPublicUrl(path).data.publicUrl;
+  }
+
   async function addEquipment(event) {
     event.preventDefault();
-    if (!isAdmin) return;
+    if (!isAdmin || !supabase || !user) return;
     const form = new FormData(event.currentTarget);
     const item = {
       asset_code: String(form.get("asset_tag") || "").trim(),
       equipment_name: String(form.get("name") || "").trim(),
       category_id: Number(form.get("category_id")),
+      quantity: Number(form.get("quantity")),
       brand: String(form.get("brand") || "").trim() || null,
       model: String(form.get("model") || "").trim() || null,
       serial_number: String(form.get("serial_number") || "").trim() || null,
@@ -561,17 +586,22 @@ export default function Home() {
       availability_status: "available",
       condition_status: "good",
     };
-    await runAction(() => supabase.from("equipment").insert(item), "Equipment added to inventory.");
+    await runAction(async () => {
+      const imageUrl = await uploadEquipmentImage(form);
+      const { error: insertError } = await supabase.from("equipment").insert({ ...item, image_url: imageUrl });
+      if (insertError) throw insertError;
+    }, "Equipment added to inventory.");
   }
 
   async function updateEquipment(event) {
     event.preventDefault();
-    if (!isAdmin || !modal?.item) return;
+    if (!isAdmin || !modal?.item || !supabase || !user) return;
     const form = new FormData(event.currentTarget);
     const item = {
       asset_code: String(form.get("asset_tag") || "").trim(),
       equipment_name: String(form.get("name") || "").trim(),
       category_id: Number(form.get("category_id")),
+      quantity: Number(form.get("quantity")),
       brand: String(form.get("brand") || "").trim() || null,
       model: String(form.get("model") || "").trim() || null,
       serial_number: String(form.get("serial_number") || "").trim() || null,
@@ -581,7 +611,13 @@ export default function Home() {
       condition_status: String(form.get("condition_status") || "good"),
       updated_at: new Date().toISOString(),
     };
-    await runAction(() => supabase.from("equipment").update(item).eq("equipment_id", modal.item.id), "Equipment record updated.");
+    await runAction(async () => {
+      const imageUrl = await uploadEquipmentImage(form);
+      if (imageUrl) item.image_url = imageUrl;
+      else if (form.get("remove_image") === "on") item.image_url = null;
+      const { error: updateError } = await supabase.from("equipment").update(item).eq("equipment_id", modal.item.id);
+      if (updateError) throw updateError;
+    }, "Equipment record updated.");
   }
 
   async function saveAccount(event) {
@@ -910,10 +946,16 @@ export default function Home() {
                 <form className="modal-form" onSubmit={modal.kind === "edit-equipment" ? updateEquipment : addEquipment}>
                   <label><span>Equipment name</span><input name="name" placeholder="e.g. Canon EOS R6" defaultValue={modal.item?.name || ""} required maxLength={160} /></label>
                   <div className="form-row"><label><span>Asset code</span><input name="asset_tag" placeholder="CAM-001" defaultValue={modal.item?.asset_tag || ""} required maxLength={80} /></label><label><span>Category</span><select name="category_id" defaultValue={modal.item?.category_id || ""} required><option value="" disabled>Select a category</option>{categoryOptions.map((option) => <option key={option.category_id} value={option.category_id}>{option.category_name}</option>)}</select></label></div>
+                  <label><span>Amount</span><input name="quantity" type="number" min="0" step="1" defaultValue={modal.item?.quantity ?? 1} required /></label>
                   <div className="form-row"><label><span>Brand (optional)</span><input name="brand" defaultValue={modal.item?.brand || ""} maxLength={120} /></label><label><span>Model (optional)</span><input name="model" defaultValue={modal.item?.model || ""} maxLength={120} /></label></div>
                   <label><span>Serial number (optional)</span><input name="serial_number" defaultValue={modal.item?.serial_number || ""} maxLength={160} /></label>
                   <label><span>Storage location</span><input name="location" placeholder="Media office · Cabinet 2" defaultValue={modal.item?.location || ""} maxLength={200} /></label>
                   <label><span>Description (optional)</span><textarea name="description" rows="3" placeholder="Condition, accessories, or notes" defaultValue={modal.item?.description || ""} maxLength={1000} /></label>
+                  <label><span>Equipment picture</span><input name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /><small className="field-hint">JPEG, PNG, WebP, or GIF; 5 MB maximum.</small></label>
+                  {modal.kind === "edit-equipment" && modal.item.image_url && (
+                    <div className="equipment-image-preview"><img src={modal.item.image_url} alt={`Current picture of ${modal.item.name}`} /><span>Current picture</span></div>
+                  )}
+                  {modal.kind === "edit-equipment" && modal.item.image_url && <label className="checkbox-label"><input name="remove_image" type="checkbox" /><span>Remove current picture</span></label>}
                   {modal.kind === "edit-equipment" && <label><span>Condition</span><select name="condition_status" defaultValue={modal.item.condition_status}><option value="good">Good</option><option value="fair">Fair</option><option value="damaged">Damaged</option></select></label>}
                   {modal.kind === "edit-equipment" && <label><span>Availability</span><select name="status" defaultValue={modal.item.availability_status}><option value="available">Available</option><option value="maintenance">Maintenance</option><option value="retired">Retired</option>{["borrowed", "reserved"].includes(modal.item.availability_status) && <option value={modal.item.availability_status}>{modal.item.availability_status === "borrowed" ? "Borrowed" : "Reserved"} (manage through requests)</option>}</select></label>}
                   <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)}>Cancel</button><button className="button-primary" disabled={busy || (!categoryOptions.length && modal.kind === "add-equipment")} type="submit">{busy ? "Saving…" : modal.kind === "edit-equipment" ? "Save changes" : "Add to inventory"} {modal.kind === "edit-equipment" ? <Check size={15} /> : <Plus size={15} />}</button></div>
@@ -1094,9 +1136,9 @@ function EquipmentTable({ equipment, onEdit, onDelete }) {
   if (!equipment.length) return <EmptyState title="No equipment records" copy="Add the first item to start your inventory." />;
   return (
     <div className="table-wrap inventory-table">
-      <table><thead><tr><th>Asset</th><th>Category</th><th>Storage</th><th>Status</th><th>Actions</th></tr></thead>
+      <table><thead><tr><th>Asset</th><th>Category</th><th>Amount</th><th>Storage</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>{equipment.map((item) => <tr key={item.id}>
-          <td><strong>{item.name}</strong><small>{item.asset_tag}</small></td><td>{item.category || "—"}</td><td>{item.location || "—"}</td><td><StatusPill value={item.status} /></td>
+          <td><div className="inventory-asset">{item.image_url && <img src={item.image_url} alt="" />}<div><strong>{item.name}</strong><small>{item.asset_tag}</small></div></div></td><td>{item.category || "—"}</td><td>{item.quantity}</td><td>{item.location || "—"}</td><td><StatusPill value={item.quantity === 0 ? "out_of_stock" : item.status} /></td>
           <td><div className="table-actions">
             <button type="button" className="button-secondary" onClick={() => onEdit(item)} aria-label={`Edit ${item.name}`}><Pencil size={14} /> Edit</button>
             <button type="button" className="button-danger" onClick={() => onDelete(item)} aria-label={`Remove ${item.name}`}><Trash2 size={14} /> Delete</button>
