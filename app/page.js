@@ -105,10 +105,33 @@ function SignIn({ supabase, configError }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [token, setToken] = useState("");
+  const [isCodeSent, setIsCodeSent] = useState(false);
   const [name, setName] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  async function handleSendOtp() {
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    });
+
+    if (otpError) throw otpError;
+    setIsCodeSent(true);
+    setNotice(`A one-time code was sent to ${email}.`);
+  }
+
+  async function handleVerifyOtp() {
+    const { error: otpError } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: "email",
+    });
+
+    if (otpError) throw otpError;
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -118,7 +141,10 @@ function SignIn({ supabase, configError }) {
 
     try {
       if (!supabase) throw new Error(configError);
-      if (mode === "signup") {
+      if (mode === "signin") {
+        if (isCodeSent) await handleVerifyOtp();
+        else await handleSendOtp();
+      } else if (mode === "signup") {
         const { error: signUpError } = await supabase.auth.signUp({
           email,
           password,
@@ -133,15 +159,38 @@ function SignIn({ supabase, configError }) {
         });
         if (resetError) throw resetError;
         setNotice("If an account exists for that address, a password reset link is on its way.");
-      } else {
-        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-        if (signInError) throw signInError;
       }
     } catch (submissionError) {
-      setError(getErrorMessage(submissionError));
+      const message = getErrorMessage(submissionError);
+      setError(mode === "signin"
+        ? `${isCodeSent ? "Invalid or expired code" : "Error sending code"}: ${message}`
+        : message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function resendOtp() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    try {
+      if (!supabase) throw new Error(configError);
+      await handleSendOtp();
+    } catch (submissionError) {
+      setError(`Error sending code: ${getErrorMessage(submissionError)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changeMode(nextMode) {
+    setMode(nextMode);
+    setIsCodeSent(false);
+    setToken("");
+    setError("");
+    setNotice("");
   }
 
   return (
@@ -171,9 +220,9 @@ function SignIn({ supabase, configError }) {
         </div>
         <div className="auth-card">
           <div className="auth-heading">
-            <p className="eyebrow">{mode === "signup" ? "Get started" : mode === "reset" ? "Account recovery" : "Welcome back"}</p>
-            <h2>{mode === "signup" ? "Create your account" : mode === "reset" ? "Reset your password" : "Sign in to your workspace"}</h2>
-            <p>{mode === "signup" ? "Use your institutional email to request access." : "Access equipment, reservations, and your borrowing history."}</p>
+            <p className="eyebrow">{mode === "signup" ? "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
+            <h2>{mode === "signup" ? "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
+            <p>{mode === "signup" ? "Use your institutional email to request access." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the one-time code sent to ${email}.` : "Access equipment, reservations, and your borrowing history with a one-time email code."}</p>
           </div>
           <form className="auth-form" onSubmit={submit}>
             {mode === "signup" && (
@@ -184,12 +233,18 @@ function SignIn({ supabase, configError }) {
             )}
             <label>
               <span>Institutional email</span>
-              <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@rmmc.edu.ph" required />
+              <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@rmmc.edu.ph" disabled={mode === "signin" && isCodeSent} required />
             </label>
-            {mode !== "reset" && (
+            {mode === "signin" && isCodeSent && (
+              <label>
+                <span>One-time code</span>
+                <input type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={token} onChange={(event) => setToken(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="Enter your 6-digit code" required />
+              </label>
+            )}
+            {mode === "signup" && (
               <label>
                 <span>Password</span>
-                <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required />
+                <input type="password" autoComplete="new-password" minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required />
               </label>
             )}
             {error && <p className="feedback feedback-error" role="alert">{error}</p>}
@@ -198,20 +253,26 @@ function SignIn({ supabase, configError }) {
             {mode === "signin" && (
               <div className="auth-options">
                 <span>Protected by Supabase authentication</span>
-                <button type="button" onClick={() => { setMode("reset"); setError(""); setNotice(""); }}>Forgot password?</button>
+                {isCodeSent
+                  ? <button type="button" onClick={resendOtp} disabled={busy}>Resend code</button>
+                  : <button type="button" onClick={() => changeMode("reset")}>Forgot password?</button>}
               </div>
             )}
             <button className="auth-submit" disabled={busy || Boolean(configError)} type="submit">
-              {busy ? "Please wait…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : "Sign in"}
+              {busy ? "Please wait…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : isCodeSent ? "Verify code" : "Send sign-in code"}
               <ArrowUpRight size={16} />
             </button>
           </form>
           <p className="auth-switch">
-            {mode === "signin" ? "New to the system?" : "Already have an account?"}
-            <button type="button" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); setNotice(""); }}>
-              {mode === "signin" ? "Request access" : "Sign in"}
-            </button>
-            {mode === "reset" && <button type="button" onClick={() => setMode("signin")}>Back to sign in</button>}
+            {mode === "signin" && isCodeSent
+              ? <button type="button" onClick={() => { setIsCodeSent(false); setToken(""); setError(""); setNotice(""); }}>Use a different email</button>
+              : <>
+                  {mode === "signin" ? "New to the system?" : "Already have an account?"}
+                  <button type="button" onClick={() => changeMode(mode === "signin" ? "signup" : "signin")}>
+                    {mode === "signin" ? "Request access" : "Sign in"}
+                  </button>
+                  {mode === "reset" && <button type="button" onClick={() => changeMode("signin")}>Back to sign in</button>}
+                </>}
           </p>
           <p className="auth-terms">Use of this system is subject to your institution’s equipment policies.</p>
           <InstallAppButton />

@@ -14,7 +14,25 @@ A browser-first, installable PWA built with Next.js, React, Tailwind CSS, and Su
    npm run dev
    ```
 
-5. Open `http://localhost:5501`, create an account, and confirm the sign-in link if email confirmation is enabled in Supabase.
+5. In Supabase, configure the **Magic Link or OTP** email template to show `{{ .Token }}` (instructions below).
+6. Open `http://localhost:5501`, create an account, and sign in with the emailed one-time code.
+
+### Configure email-code sign-in
+
+The app requests an email OTP with Supabase `signInWithOtp` and verifies it with `verifyOtp`. The email content is controlled by the Supabase project, not by this app. To send a code instead of a clickable sign-in link:
+
+1. Open **Authentication → Email Templates → Magic Link or OTP** in the Supabase Dashboard.
+2. Set the subject to `Login Code: {{ .Token }}`.
+3. Replace the template body with HTML that includes `{{ .Token }}` and does not include `{{ .ConfirmationURL }}` or a link/button using it. For example:
+
+   ```html
+   <h1>Your sign-in code</h1>
+   <p>Enter this code in the app to sign in:</p>
+   <p style="font-size:32px;font-weight:bold;letter-spacing:8px">{{ .Token }}</p>
+   <p>If you did not request this code, you can ignore this email.</p>
+   ```
+
+4. Save the template. The app’s sign-in screen will prompt for the code and verify it. If the email still contains a link, check that the saved template no longer references `{{ .ConfirmationURL }}`.
 
 ### Run and debug in VS Code
 
@@ -42,7 +60,7 @@ Only the `admin` role can add, edit, or remove equipment. Equipment changes are 
 
 ## Included workflows
 
-- Supabase email/password sign-in, account registration, password reset, and cookie refresh.
+- Supabase email-code sign-in, password-based account registration, password reset, and cookie refresh.
 - New signups automatically receive an active `student` borrower row with a generated borrower number; accounts created before the borrower migration may need to be added to `public.borrowers` separately.
 - Equipment search, category filters, equipment status, storage location, and administrator-only inventory management with a database-backed change history.
 - Shared member/admin feedback discussions with replies and administrator-managed status updates.
