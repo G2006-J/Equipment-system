@@ -127,10 +127,25 @@ function SignIn({ supabase, configError }) {
     const { error: otpError } = await supabase.auth.verifyOtp({
       email,
       token,
-      type: "email",
+      type: mode === "signup" ? "signup" : "email",
     });
 
     if (otpError) throw otpError;
+  }
+
+  async function handleResendCode() {
+    if (mode === "signup") {
+      const { error: resendError } = await supabase.auth.resend({
+        type: "signup",
+        email,
+      });
+
+      if (resendError) throw resendError;
+      setNotice(`A verification code was sent to ${email}.`);
+      return;
+    }
+
+    await handleSendOtp();
   }
 
   async function submit(event) {
@@ -145,14 +160,18 @@ function SignIn({ supabase, configError }) {
         if (isCodeSent) await handleVerifyOtp();
         else await handleSendOtp();
       } else if (mode === "signup") {
-        const { error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { data: { display_name: name.trim() } },
-        });
-        if (signUpError) throw signUpError;
-        setNotice("Your active student borrower account is ready. Check your email to confirm your account, then sign in.");
-        setMode("signin");
+        if (isCodeSent) {
+          await handleVerifyOtp();
+        } else {
+          const { error: signUpError } = await supabase.auth.signUp({
+            email,
+            password,
+            options: { data: { display_name: name.trim() } },
+          });
+          if (signUpError) throw signUpError;
+          setIsCodeSent(true);
+          setNotice(`A verification code was sent to ${email}.`);
+        }
       } else if (mode === "reset") {
         const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
           redirectTo: window.location.origin,
@@ -164,7 +183,9 @@ function SignIn({ supabase, configError }) {
       const message = getErrorMessage(submissionError);
       setError(mode === "signin"
         ? `${isCodeSent ? "Invalid or expired code" : "Error sending code"}: ${message}`
-        : message);
+        : mode === "signup" && isCodeSent
+          ? `Invalid or expired code: ${message}`
+          : message);
     } finally {
       setBusy(false);
     }
@@ -177,7 +198,7 @@ function SignIn({ supabase, configError }) {
 
     try {
       if (!supabase) throw new Error(configError);
-      await handleSendOtp();
+      await handleResendCode();
     } catch (submissionError) {
       setError(`Error sending code: ${getErrorMessage(submissionError)}`);
     } finally {
@@ -220,12 +241,12 @@ function SignIn({ supabase, configError }) {
         </div>
         <div className="auth-card">
           <div className="auth-heading">
-            <p className="eyebrow">{mode === "signup" ? "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
-            <h2>{mode === "signup" ? "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
-            <p>{mode === "signup" ? "Use your institutional email to request access." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the one-time code sent to ${email}.` : "Access equipment, reservations, and your borrowing history with a one-time email code."}</p>
+            <p className="eyebrow">{mode === "signup" ? isCodeSent ? "Verify your email" : "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
+            <h2>{mode === "signup" ? isCodeSent ? "Enter your verification code" : "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
+            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Use your institutional email to request access." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the one-time code sent to ${email}.` : "Access equipment, reservations, and your borrowing history with a one-time email code."}</p>
           </div>
           <form className="auth-form" onSubmit={submit}>
-            {mode === "signup" && (
+            {mode === "signup" && !isCodeSent && (
               <label>
                 <span>Full name</span>
                 <input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" required />
@@ -233,15 +254,15 @@ function SignIn({ supabase, configError }) {
             )}
             <label>
               <span>Institutional email</span>
-              <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@rmmc.edu.ph" disabled={mode === "signin" && isCodeSent} required />
+              <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@rmmc.edu.ph" disabled={isCodeSent && (mode === "signin" || mode === "signup")} required />
             </label>
-            {mode === "signin" && isCodeSent && (
+            {(mode === "signin" || mode === "signup") && isCodeSent && (
               <label>
-                <span>One-time code</span>
+                <span>{mode === "signup" ? "Verification code" : "One-time code"}</span>
                 <input type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={token} onChange={(event) => setToken(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="Enter your 6-digit code" required />
               </label>
             )}
-            {mode === "signup" && (
+            {mode === "signup" && !isCodeSent && (
               <label>
                 <span>Password</span>
                 <input type="password" autoComplete="new-password" minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required />
@@ -258,8 +279,14 @@ function SignIn({ supabase, configError }) {
                   : <button type="button" onClick={() => changeMode("reset")}>Forgot password?</button>}
               </div>
             )}
+            {mode === "signup" && isCodeSent && (
+              <div className="auth-options">
+                <span>Check your inbox for the verification code.</span>
+                <button type="button" onClick={resendOtp} disabled={busy}>Resend code</button>
+              </div>
+            )}
             <button className="auth-submit" disabled={busy || Boolean(configError)} type="submit">
-              {busy ? "Please wait…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : isCodeSent ? "Verify code" : "Send sign-in code"}
+              {busy ? "Please wait…" : mode === "signup" ? isCodeSent ? "Verify code" : "Create account" : mode === "reset" ? "Send reset link" : isCodeSent ? "Verify code" : "Send sign-in code"}
               <ArrowUpRight size={16} />
             </button>
           </form>
@@ -294,12 +321,13 @@ function EmptyState({ title, copy, action, onAction }) {
 }
 
 function EquipmentCard({ item, onBorrow, onReserve }) {
-  const canBorrow = item.status === "available" && item.quantity > 0;
+  const canBorrow = ["available", "checked_out"].includes(item.status) && item.available_quantity > 0;
+  const canReserve = ["available", "checked_out"].includes(item.status) && item.quantity > 0;
   return (
     <article className="equipment-card">
       <div className={`equipment-art art-${(item.category || "general").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
         {item.image_url ? <img src={item.image_url} alt="" /> : <Laptop size={42} strokeWidth={1.2} />}
-        <StatusPill value={item.quantity === 0 ? "out_of_stock" : item.status} />
+        <StatusPill value={item.quantity === 0 || item.available_quantity === 0 ? "out_of_stock" : item.status} />
       </div>
       <div className="card-body">
         <div className="card-category">{item.category || "General"}</div>
@@ -307,13 +335,13 @@ function EquipmentCard({ item, onBorrow, onReserve }) {
         <div className="item-meta">
           <span>{item.asset_tag}</span><i /><span>{item.location || "Storage not set"}</span>
         </div>
-        <p className="item-quantity">Amount: <strong>{item.quantity}</strong></p>
+        <p className="item-quantity">Available amount: <strong>{item.available_quantity ?? "—"} / {item.quantity}</strong></p>
         {item.description && <p className="item-description">{item.description}</p>}
         <div className="card-actions">
           <button className="button-primary" disabled={!canBorrow} onClick={() => onBorrow(item)}>
-            {canBorrow ? "Request to borrow" : item.quantity === 0 ? "Out of stock" : item.status === "maintenance" ? "Under maintenance" : "Unavailable"}
+            {canBorrow ? "Request to borrow" : item.available_quantity === null ? "Availability unavailable" : item.quantity === 0 || item.available_quantity === 0 ? "Out of stock" : item.status === "maintenance" ? "Under maintenance" : "Unavailable"}
           </button>
-          {canBorrow && <button className="button-icon" aria-label={`Reserve ${item.name}`} title="Reserve" onClick={() => onReserve(item)}><CalendarDays size={17} /></button>}
+          {canReserve && <button className="button-icon" aria-label={`Reserve ${item.name}`} title="Reserve" onClick={() => onReserve(item)}><CalendarDays size={17} /></button>}
         </div>
       </div>
     </article>
@@ -358,11 +386,12 @@ export default function Home() {
     setLoading(true);
     setError("");
 
-    const [profileResult, equipmentResult, categoryResult, borrowingResult, borrowerResult, reservationResult, feedbackResult, repliesResult] = await Promise.all([
+    const [profileResult, equipmentResult, categoryResult, borrowingResult, availableQuantitiesResult, borrowerResult, reservationResult, feedbackResult, repliesResult] = await Promise.all([
       client.from("profiles").select("*").eq("id", currentUser.id).maybeSingle(),
       client.from("equipment").select("*, categories(category_name)").is("deleted_at", null).order("equipment_name"),
       client.from("categories").select("category_id, category_name").order("category_name"),
       client.from("borrowings").select("*, borrowers(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(*, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, categories(category_name)))").order("created_at", { ascending: false }),
+      client.rpc("equipment_available_quantities"),
       client.rpc("current_borrower_id"),
       client.from("reservations").select("*, equipment(equipment_id, asset_code, equipment_name, categories(category_name)), borrowers(borrower_id, first_name, last_name, email)").order("created_at", { ascending: false }),
       client.from("feedback_threads").select("*").order("updated_at", { ascending: false }),
@@ -386,6 +415,12 @@ export default function Home() {
     if (equipmentResult.error) {
       errors.push(`Equipment could not be loaded: ${equipmentResult.error.message}`);
     } else {
+      if (availableQuantitiesResult.error) {
+        errors.push(`Available equipment amounts could not be loaded: ${availableQuantitiesResult.error.message}`);
+      }
+      const availableQuantities = new Map(
+        (availableQuantitiesResult.data || []).map((item) => [item.equipment_id, item.available_quantity]),
+      );
       setEquipment((equipmentResult.data || []).map((item) => ({
         ...item,
         id: item.equipment_id,
@@ -396,6 +431,9 @@ export default function Home() {
         status: item.availability_status === "borrowed" ? "checked_out" : item.availability_status,
         image_url: item.image_url || null,
         quantity: item.quantity ?? 1,
+        available_quantity: availableQuantitiesResult.error
+          ? null
+          : availableQuantities.get(item.equipment_id) ?? null,
       })));
     }
     if (categoryResult.error) errors.push(`Equipment categories could not be loaded: ${categoryResult.error.message}`);
@@ -998,7 +1036,7 @@ export default function Home() {
         <div className="modal-wrap" role="presentation">
           <button className="modal-backdrop" onClick={() => !busy && setModal(null)} aria-label="Close dialog" />
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-            <button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><X size={18} /></button>
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Close" disabled={busy}><X size={18} /></button>
             {modal.kind === "add-equipment" || modal.kind === "edit-equipment" ? (
               <>
                 <div className="modal-kicker">INVENTORY</div>
@@ -1035,7 +1073,7 @@ export default function Home() {
                     <label><span>Reservation ends</span><input type="date" name="end_date" min={new Date().toISOString().slice(0, 10)} defaultValue={new Date(Date.now() + 86400000).toISOString().slice(0, 10)} required /></label>
                   </div> : <label><span>Expected return date</span><input type="date" name="end_date" min={new Date().toISOString().slice(0, 10)} defaultValue={new Date(Date.now() + 86400000).toISOString().slice(0, 10)} required /></label>}
                   <div className="modal-info"><ShieldCheck size={19} /><div><strong>Requests are reviewed by the equipment team</strong><span>You’ll see status updates in My borrowing.</span></div></div>
-                  <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)}>Cancel</button><button className="button-primary" disabled={busy} type="submit">{busy ? "Submitting…" : "Submit request"} <ArrowUpRight size={15} /></button></div>
+                  <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)} disabled={busy}>Cancel</button><button className="button-primary" disabled={busy} type="submit">{busy ? "Submitting…" : "Submit request"} <ArrowUpRight size={15} /></button></div>
                 </form>
               </>
             )}
@@ -1197,9 +1235,9 @@ function EquipmentTable({ equipment, onEdit, onDelete }) {
   if (!equipment.length) return <EmptyState title="No equipment records" copy="Add the first item to start your inventory." />;
   return (
     <div className="table-wrap inventory-table">
-      <table><thead><tr><th>Asset</th><th>Category</th><th>Amount</th><th>Storage</th><th>Status</th><th>Actions</th></tr></thead>
+      <table><thead><tr><th>Asset</th><th>Category</th><th>Available / total</th><th>Storage</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>{equipment.map((item) => <tr key={item.id}>
-          <td><div className="inventory-asset">{item.image_url && <img src={item.image_url} alt="" />}<div><strong>{item.name}</strong><small>{item.asset_tag}</small></div></div></td><td>{item.category || "—"}</td><td>{item.quantity}</td><td>{item.location || "—"}</td><td><StatusPill value={item.quantity === 0 ? "out_of_stock" : item.status} /></td>
+          <td><div className="inventory-asset">{item.image_url && <img src={item.image_url} alt="" />}<div><strong>{item.name}</strong><small>{item.asset_tag}</small></div></div></td><td>{item.category || "—"}</td><td>{item.available_quantity ?? "—"} / {item.quantity}</td><td>{item.location || "—"}</td><td><StatusPill value={item.quantity === 0 || item.available_quantity === 0 ? "out_of_stock" : item.status} /></td>
           <td><div className="table-actions">
             <button type="button" className="button-secondary" onClick={() => onEdit(item)} aria-label={`Edit ${item.name}`}><Pencil size={14} /> Edit</button>
             <button type="button" className="button-danger" onClick={() => onDelete(item)} aria-label={`Remove ${item.name}`}><Trash2 size={14} /> Delete</button>

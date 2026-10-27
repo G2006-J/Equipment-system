@@ -6,7 +6,7 @@ A browser-first, installable PWA built with Next.js, React, Tailwind CSS, and Su
 
 1. Install Node.js 20.9 or newer.
 2. Copy `.env.example` to `.env.local` and set the Supabase project URL and publishable key.
-3. This app is configured for the existing RMMC schema (`profiles`, `categories`, `equipment`, `borrowers`, `borrowings`, `borrowing_items`, `activity_logs`, and `notifications`). In the matching Supabase project's SQL Editor, run [`supabase/migrations/202610230002_align_existing_schema.sql`](./supabase/migrations/202610230002_align_existing_schema.sql), [`supabase/migrations/202610230003_auto_create_student_borrowers.sql`](./supabase/migrations/202610230003_auto_create_student_borrowers.sql), and [`supabase/migrations/202610260001_equipment_images_quantity.sql`](./supabase/migrations/202610260001_equipment_images_quantity.sql), in that order. The last migration adds equipment pictures and amounts, creates the public image bucket, and restricts image uploads to administrators. Do **not** run the earlier `202610220001_equipment_borrowing.sql` or `202610230001_equipment_feedback_audit.sql` migrations against this database; those are for the app's original, different schema.
+3. This app is configured for the existing RMMC schema (`profiles`, `categories`, `equipment`, `borrowers`, `borrowings`, `borrowing_items`, `activity_logs`, and `notifications`). In the matching Supabase project's SQL Editor, run [`supabase/migrations/202610230002_align_existing_schema.sql`](./supabase/migrations/202610230002_align_existing_schema.sql), [`supabase/migrations/202610230003_auto_create_student_borrowers.sql`](./supabase/migrations/202610230003_auto_create_student_borrowers.sql), [`supabase/migrations/202610260001_equipment_images_quantity.sql`](./supabase/migrations/202610260001_equipment_images_quantity.sql), [`supabase/migrations/202610270001_allow_multiple_equipment_requests.sql`](./supabase/migrations/202610270001_allow_multiple_equipment_requests.sql), and [`supabase/migrations/202610270002_equipment_available_quantities.sql`](./supabase/migrations/202610270002_equipment_available_quantities.sql), in that order. The image/quantity migration adds equipment pictures and amounts, creates the public image bucket, and restricts image uploads to administrators. The borrowing migration allows concurrent requests up to each equipment item's quantity and updates availability as requests are reviewed and returned. The final migration displays available versus total amounts, restores availability after staff confirm a return, and keeps overdue active loans from being counted as available. Do **not** run the earlier `202610220001_equipment_borrowing.sql` or `202610230001_equipment_feedback_audit.sql` migrations against this database; those are for the app's original, different schema.
 4. Install dependencies and start the app:
 
    ```powershell
@@ -14,8 +14,8 @@ A browser-first, installable PWA built with Next.js, React, Tailwind CSS, and Su
    npm run dev
    ```
 
-5. In Supabase, configure the **Magic Link or OTP** email template to show `{{ .Token }}` (instructions below).
-6. Open `http://localhost:5501`, create an account, and sign in with the emailed one-time code.
+5. In Supabase, configure both the **Magic Link or OTP** and **Confirm signup** email templates to show `{{ .Token }}` (instructions below).
+6. Open `http://localhost:5501`, create an account, verify the emailed signup code, and sign in with the emailed one-time code.
 
 ### Configure email-code sign-in
 
@@ -33,6 +33,23 @@ The app requests an email OTP with Supabase `signInWithOtp` and verifies it with
    ```
 
 4. Save the template. The app’s sign-in screen will prompt for the code and verify it. If the email still contains a link, check that the saved template no longer references `{{ .ConfirmationURL }}`.
+
+### Configure signup verification codes
+
+Password-based signup uses Supabase `signUp` and verifies the account with `verifyOtp` using the `signup` type. To send a code instead of a confirmation link:
+
+1. Open **Authentication → Email Templates → Confirm signup** in the Supabase Dashboard.
+2. Set the subject to `Your verification code: {{ .Token }}`.
+3. Replace the template body with HTML that includes `{{ .Token }}` and does not include `{{ .ConfirmationURL }}`. For example:
+
+   ```html
+   <h1>Verify your email</h1>
+   <p>Enter this code in the app to activate your account:</p>
+   <p style="font-size:32px;font-weight:bold;letter-spacing:8px">{{ .Token }}</p>
+   <p>If you did not create an account, you can ignore this email.</p>
+   ```
+
+4. Save the template. The signup screen will prompt for this code before activating the account.
 
 ### Run and debug in VS Code
 
@@ -60,11 +77,11 @@ Only the `admin` role can add, edit, or remove equipment. Equipment changes are 
 
 ## Included workflows
 
-- Supabase email-code sign-in, password-based account registration, password reset, and cookie refresh.
+- Supabase email-code sign-in, password-based account registration with signup-code verification, password reset, and cookie refresh.
 - New signups automatically receive an active `student` borrower row with a generated borrower number; accounts created before the borrower migration may need to be added to `public.borrowers` separately.
 - Equipment search, category filters, equipment status, storage location, and administrator-only inventory management with a database-backed change history.
 - Shared member/admin feedback discussions with replies and administrator-managed status updates.
-- Borrowing and reservation requests linked to the existing `borrowers`, `borrowings`, `borrowing_items`, and `equipment` records, with administrator/property-custodian review and return confirmation.
+- Borrowing and reservation requests linked to the existing `borrowers`, `borrowings`, `borrowing_items`, and `equipment` records, with administrator/property-custodian review and return confirmation. Available amounts decrease for active borrowing requests and return after staff confirm the return; overlapping requests are accepted only up to the equipment quantity.
 - Member activity, manager request queues, borrowing history, and CSV report export.
 - Installable PWA manifest and an offline page. Private workspace data is never cached by the service worker.
 
